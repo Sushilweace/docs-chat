@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chat with your documents</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div id="toast" role="status" aria-live="polite"></div>
+
+    <!-- Login / signup -->
+    <main id="auth-view" class="auth hidden">
+      <section class="card">
+        <h1>📄 DocChat</h1>
+        <p class="muted">Ask questions about your own PDFs.</p>
+        <div class="tabs" role="tablist">
+          <button type="button" class="tab active" data-mode="login" role="tab">Log in</button>
+          <button type="button" class="tab" data-mode="signup" role="tab">Sign up</button>
+        </div>
+        <form id="auth-form" novalidate>
+          <label>Email
+            <input id="email" type="email" autocomplete="email" required placeholder="you@example.com" />
+          </label>
+          <label>Password
+            <input id="password" type="password" autocomplete="current-password" required minlength="8"
+                   placeholder="At least 8 characters" />
+          </label>
+          <p id="auth-error" class="error hidden" role="alert"></p>
+          <button id="auth-submit" class="primary" type="submit">Log in</button>
+        </form>
+      </section>
+    </main>
+
+    <!-- Main app -->
+    <div id="app-view" class="app hidden">
+      <aside class="sidebar">
+        <header class="brand">
+          <h1>📄 DocChat</h1>
+          <div class="user">
+            <span id="user-email" class="muted" title=""></span>
+            <button id="logout" class="link" type="button">Log out</button>
+          </div>
+        </header>
+
+        <label id="dropzone" class="dropzone" tabindex="0">
+          <input id="file-input" type="file" accept=".pdf,application/pdf" multiple hidden />
+          <strong>Upload PDFs</strong>
+          <span class="muted">Click or drag &amp; drop</span>
+        </label>
+
+        <h2>Your documents</h2>
+        <ul id="doc-list" class="doc-list"></ul>
+      </aside>
+
+      <section class="chat">
+        <header class="chat-header">
+          <h2>Chat</h2>
+          <button id="new-chat" class="secondary" type="button">New chat</button>
+        </header>
+
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <form id="chat-form" class="composer">
+          <textarea id="question" rows="1" maxlength="2000"
+                    placeholder="Ask about your documents…  (Enter to send, Shift+Enter for a new line)"></textarea>
+          <button id="send" class="primary" type="submit">Send</button>
+        </form>
+      </section>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

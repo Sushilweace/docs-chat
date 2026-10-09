@@ -1,0 +1,17 @@
+[
+  {
+    "question": "What is the main topic of the document?",
+    "expected_source": "your-document.pdf",
+    "expected_page": 1
+  },
+  {
+    "question": "Replace me with a question whose answer appears on a known page",
+    "expected_source": "your-document.pdf",
+    "expected_page": 2,
+    "contains": "a phrase that should appear in the retrieved chunk"
+  },
+  {
+    "question": "What is the airspeed velocity of an unladen swallow?",
+    "expected_source": null
+  }
+]
