@@ -14,6 +14,7 @@ os.environ.update(
     PRELOAD_EMBEDDINGS="false",
     ANTHROPIC_API_KEY="test-key",
     DISTANCE_THRESHOLD="0.7",
+    ADMIN_EMAILS="Admin@Example.com, other-admin@example.com",
     TOP_K="5",
 )
 
@@ -92,3 +93,9 @@ def upload_pdf(client: TestClient):
         )
 
     return _upload
+
+
+@pytest.fixture(autouse=True)
+def _no_llm_retry_delays(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never wait on LLM retry backoff (retry tests opt back in explicitly)."""
+    monkeypatch.setattr(llm, "_RETRY_DELAYS", ())

@@ -2,9 +2,9 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
-from app.models.db import DocumentStatus
+from app.models.db import DocumentStatus, MessageRole
 
 
 # --- Auth ---
@@ -28,6 +28,12 @@ class UserOut(BaseModel):
     id: int
     email: EmailStr
     created_at: datetime
+
+
+class MeOut(UserOut):
+    """``GET /auth/me``: the current user and whether they are an admin."""
+
+    is_admin: bool
 
 
 class TokenResponse(BaseModel):
@@ -66,6 +72,14 @@ class ChatRequest(BaseModel):
         gt=0,
         description="Continue an existing conversation; omit (or null) to start a new one.",
     )
+    edit_message_id: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Edit mode: id of one of your earlier questions in this conversation. That question "
+            "and everything after it are replaced by this new question and its answer."
+        ),
+    )
 
     @field_validator("question")
     @classmethod
@@ -74,6 +88,12 @@ class ChatRequest(BaseModel):
         if not value:
             raise ValueError("question must not be blank")
         return value
+
+    @model_validator(mode="after")
+    def _edit_needs_conversation(self) -> "ChatRequest":
+        if self.edit_message_id is not None and self.conversation_id is None:
+            raise ValueError("edit_message_id requires conversation_id")
+        return self
 
 
 class SourceOut(BaseModel):
@@ -84,3 +104,32 @@ class SourceOut(BaseModel):
     page: int
     distance: float
     snippet: str
+
+
+# --- Saved conversations ---
+class ConversationOut(BaseModel):
+    """One row of the chat-history list."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    created_at: datetime
+
+
+class MessageOut(BaseModel):
+    """A saved chat message. ``sources`` are citations only (file + page), no excerpt text."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    role: MessageRole
+    content: str
+    sources: list[dict] | None = None
+    created_at: datetime
+
+
+class ConversationDetail(ConversationOut):
+    """A conversation with all of its messages, oldest first."""
+
+    messages: list[MessageOut]

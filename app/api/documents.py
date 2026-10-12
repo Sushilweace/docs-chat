@@ -1,5 +1,6 @@
 """Document upload and listing endpoints."""
 
+import logging
 import uuid
 from pathlib import Path
 
@@ -8,9 +9,12 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
 from app.config import get_settings
+from app.core.vectorstore import get_collection
 from app.models.db import Document, DocumentStatus
 from app.models.schemas import DocumentOut
 from app.services.ingestion import ingest_document
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -91,3 +95,36 @@ def list_documents(user: CurrentUser, db: DbSession) -> list[Document]:
         .order_by(Document.created_at.desc(), Document.id.desc())
     )
     return list(db.scalars(stmt))
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_document(document_id: int, user: CurrentUser, db: DbSession) -> None:
+    """Remove a document: its vectors (so chat stops using it), the PDF file and the DB row.
+
+    Vectors are deleted first: if a later step fails, the document is already invisible to
+    retrieval and the request can simply be repeated. Old chat messages that cited the file
+    are kept as they are (they only store the file name and page number).
+
+    Raises:
+        HTTPException: 404 if it doesn't exist or isn't the caller's; 409 while it is still
+            being indexed (deleting then would race with the background ingestion).
+    """
+    document = db.get(Document, document_id)
+    if document is None or document.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+    if document.status == DocumentStatus.PROCESSING:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "This document is still being indexed. Try again in a moment."
+        )
+
+    get_collection().delete(
+        where={"$and": [{"document_id": document.id}, {"user_id": user.id}]}
+    )
+    stored_path = Path(document.stored_path)
+    db.delete(document)
+    db.commit()
+    try:
+        stored_path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not remove uploaded file %s", stored_path)
+    logger.info("document deleted user=%s document=%s", user.id, document_id)

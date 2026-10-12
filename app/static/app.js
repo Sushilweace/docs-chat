@@ -10,6 +10,7 @@ const state = {
   conversationId: null,
   streaming: false,
   docs: [],
+  convs: [],
   pollTimer: null,
 };
 
@@ -84,6 +85,19 @@ function showApp() {
   $("#user-email").title = state.email || "";
   resetChat();
   loadDocuments();
+  loadConversations();
+  showAdminLinkIfAdmin();
+}
+
+/** Admins (ADMIN_EMAILS on the server) get a link to the admin panel. */
+async function showAdminLinkIfAdmin() {
+  $("#admin-link").classList.add("hidden");
+  try {
+    const me = await (await api("/auth/me")).json();
+    $("#admin-link").classList.toggle("hidden", !me.is_admin);
+  } catch (_) {
+    /* not critical: the link just stays hidden */
+  }
 }
 
 function logout(message) {
@@ -91,9 +105,11 @@ function logout(message) {
   localStorage.removeItem("email");
   state.token = state.email = null;
   state.conversationId = null;
+  state.convs = [];
   clearTimeout(state.pollTimer);
   $("#messages").replaceChildren();
   $("#doc-list").replaceChildren();
+  $("#conv-list").replaceChildren();
   showAuth();
   if (message) toast(message, true);
 }
@@ -177,7 +193,15 @@ function renderDocuments() {
       badge.appendChild(spin);
     }
     badge.appendChild(document.createTextNode(doc.status));
-    row.append(name, badge);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-btn";
+    remove.textContent = "✕";
+    remove.title = doc.status === "processing" ? "Wait until indexing finishes" : "Remove this document";
+    remove.setAttribute("aria-label", `Remove ${doc.filename}`);
+    remove.disabled = doc.status === "processing";
+    remove.addEventListener("click", () => deleteDocument(doc));
+    row.append(name, badge, remove);
     item.appendChild(row);
 
     const meta = document.createElement("div");
@@ -234,6 +258,109 @@ async function uploadFiles(files) {
   }
 }
 
+async function deleteDocument(doc) {
+  const ok = confirm(
+    `Remove "${doc.filename}"?\n\nIt will no longer be used to answer questions. ` +
+      "Earlier chat messages are kept."
+  );
+  if (!ok) return;
+  try {
+    await api(`/documents/${doc.id}`, { method: "DELETE" });
+    toast(`Removed ${doc.filename}`);
+  } catch (err) {
+    if (err.status !== 401) toast(err.message, true);
+  }
+  await loadDocuments();
+}
+
+/* ---------- saved conversations (chat history) ---------- */
+function renderConversations() {
+  const list = $("#conv-list");
+  list.replaceChildren();
+  if (state.convs.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "empty";
+    empty.textContent = "Your chats are saved here.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const conv of state.convs) {
+    const item = document.createElement("li");
+    item.className = "conv" + (conv.id === state.conversationId ? " active" : "");
+
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "conv-open";
+    open.textContent = conv.title || "Untitled chat";
+    open.title = conv.title;
+    open.addEventListener("click", () => openConversation(conv.id));
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-btn";
+    remove.textContent = "✕";
+    remove.title = "Delete this chat";
+    remove.setAttribute("aria-label", `Delete chat: ${conv.title}`);
+    remove.addEventListener("click", () => deleteConversation(conv));
+
+    item.append(open, remove);
+    list.appendChild(item);
+  }
+}
+
+async function loadConversations() {
+  try {
+    const res = await api("/conversations");
+    state.convs = await res.json();
+  } catch (err) {
+    if (err.status !== 401) toast(err.message, true);
+    return;
+  }
+  renderConversations();
+}
+
+/** Load a saved chat from the server and show it; later questions continue it. */
+async function openConversation(id) {
+  if (state.streaming) return;
+  let conv;
+  try {
+    conv = await (await api(`/conversations/${id}`)).json();
+  } catch (err) {
+    if (err.status === 404) {
+      toast("That chat no longer exists.", true);
+      if (state.conversationId === id) resetChat();
+      await loadConversations();
+    } else if (err.status !== 401) toast(err.message, true);
+    return;
+  }
+  state.conversationId = conv.id;
+  $("#messages").replaceChildren();
+  for (const m of conv.messages) {
+    const msg = addMessage(m.role);
+    msg.setSources(m.sources || []);
+    msg.setText(m.content);
+    msg.setId(m.id);
+  }
+  renderPlaceholderIfEmpty();
+  scrollToBottom();
+  renderConversations();
+}
+
+async function deleteConversation(conv) {
+  if (state.streaming) return;
+  if (!confirm(`Delete this chat?\n\n"${conv.title}"\n\nThis cannot be undone.`)) return;
+  try {
+    await api(`/conversations/${conv.id}`, { method: "DELETE" });
+  } catch (err) {
+    if (err.status !== 404) {
+      if (err.status !== 401) toast(err.message, true);
+      return;
+    }
+  }
+  if (state.conversationId === conv.id) resetChat();
+  await loadConversations();
+}
+
 /* ---------- chat rendering ---------- */
 function messagesAtBottom() {
   const box = $("#messages");
@@ -279,6 +406,70 @@ function addMessage(role) {
   let sources = [];
   let text = "";
 
+  // Your own messages can be edited once the server has saved them (they then have an id).
+  let actions = null;
+  if (role === "user") {
+    actions = document.createElement("div");
+    actions.className = "msg-actions hidden";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "link";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", startEdit);
+    actions.appendChild(edit);
+    wrapper.appendChild(actions);
+  }
+
+  function startEdit() {
+    if (state.streaming || wrapper.querySelector(".editor")) return;
+    const editor = document.createElement("div");
+    editor.className = "editor";
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.maxLength = 2000;
+    area.rows = Math.min(8, text.split("\n").length + 1);
+    const buttons = document.createElement("div");
+    buttons.className = "editor-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "secondary";
+    cancel.textContent = "Cancel";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "primary";
+    save.textContent = "Save & resend";
+    buttons.append(cancel, save);
+    editor.append(area, buttons);
+
+    bubble.classList.add("hidden");
+    actions.classList.add("hidden");
+    wrapper.classList.add("editing");
+    wrapper.appendChild(editor);
+    area.focus();
+    area.setSelectionRange(area.value.length, area.value.length);
+
+    const close = () => {
+      editor.remove();
+      wrapper.classList.remove("editing");
+      bubble.classList.remove("hidden");
+      actions.classList.remove("hidden");
+    };
+    cancel.addEventListener("click", close);
+    save.addEventListener("click", () => {
+      const edited = area.value.trim();
+      if (!edited) return;
+      if (edited === text) return close();
+      resendEdited(wrapper, Number(wrapper.dataset.id), edited);
+    });
+    area.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") close();
+      else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        save.click();
+      }
+    });
+  }
+
   /** Render text, turning [n] markers into citation chips (tooltip: file + page). */
   function paint(streaming) {
     const stick = messagesAtBottom();
@@ -309,6 +500,12 @@ function addMessage(role) {
     setSources(value) {
       sources = value;
     },
+    /** Remember the saved message id (enables the Edit button for user messages). */
+    setId(value) {
+      if (value == null) return;
+      wrapper.dataset.id = value;
+      actions?.classList.remove("hidden");
+    },
     finish() {
       paint(false);
     },
@@ -325,6 +522,7 @@ function resetChat() {
   state.conversationId = null;
   $("#messages").replaceChildren();
   renderPlaceholderIfEmpty();
+  renderConversations();
   $("#question").focus();
 }
 
@@ -354,23 +552,44 @@ async function readSSE(response, onEvent) {
 
 function setBusy(busy) {
   state.streaming = busy;
+  document.body.classList.toggle("busy", busy);
   $("#send").disabled = busy;
   $("#question").disabled = busy;
   $("#new-chat").disabled = busy;
   if (!busy) $("#question").focus();
 }
 
-async function sendQuestion(question) {
-  addMessage("user").setText(question);
+/** Drop an edited message and everything after it from the screen, then ask the new text. */
+function resendEdited(wrapper, messageId, question) {
+  if (state.streaming) return;
+  let node = wrapper;
+  while (node) {
+    const next = node.nextElementSibling;
+    node.remove();
+    node = next;
+  }
+  sendQuestion(question, messageId);
+}
+
+/**
+ * Ask a question and stream the answer. With `editMessageId`, the server replaces that
+ * earlier question (and everything after it) only if the new answer succeeds; on failure
+ * the original conversation is reloaded from the server so nothing is lost.
+ */
+async function sendQuestion(question, editMessageId = null) {
+  const userMessage = addMessage("user");
+  userMessage.setText(question);
   const reply = addMessage("assistant");
   reply.setText("", true);
   setBusy(true);
 
   let answer = "";
   let streamError = null;
+  let editFailure = null;
   try {
     const payload = { question };
     if (state.conversationId) payload.conversation_id = state.conversationId;
+    if (editMessageId) payload.edit_message_id = editMessageId;
     const res = await api("/chat", { method: "POST", json: payload });
 
     await readSSE(res, (event, data) => {
@@ -378,24 +597,40 @@ async function sendQuestion(question) {
       else if (event === "token") {
         answer += data.text;
         reply.setText(answer, true);
-      } else if (event === "done") state.conversationId = data.conversation_id;
-      else if (event === "error") streamError = data.detail;
+      } else if (event === "done") {
+        state.conversationId = data.conversation_id;
+        userMessage.setId(data.user_message_id);
+      } else if (event === "error") streamError = data.detail;
     });
 
-    if (streamError) reply.fail(streamError);
-    else reply.finish();
+    if (streamError) {
+      reply.fail(streamError);
+      editFailure = streamError;
+    } else {
+      reply.finish();
+      loadConversations(); // new chat appears in the history list (or its title changed)
+    }
   } catch (err) {
-    if (err.status === 404 && state.conversationId) {
+    if (err.status === 401) {
+      /* logout() already ran */
+    } else if (editMessageId) {
+      editFailure = err.message;
+    } else if (err.status === 404 && state.conversationId) {
       state.conversationId = null;
       reply.fail("That conversation no longer exists. Please ask your question again to start a new one.");
-    } else if (err.status !== 401) {
+      loadConversations();
+    } else {
       reply.fail(err.message);
     }
   } finally {
     setBusy(false);
   }
-}
 
+  if (editMessageId && editFailure) {
+    toast(`${editFailure} Your original message was kept.`, true);
+    await openConversation(state.conversationId);
+  }
+}
 /* ---------- wiring ---------- */
 function autosizeTextarea() {
   const box = $("#question");

@@ -4,7 +4,7 @@ SSE event types (``data`` is always JSON):
 
 * ``sources`` - ``[{index, source, page, distance, snippet}, ...]`` (sent first)
 * ``token``   - ``{"text": "<delta>"}`` (repeated)
-* ``done``    - ``{"conversation_id": <int>}``
+* ``done``    - ``{"conversation_id": <int>, "user_message_id": <int>, "assistant_message_id": <int>}``
 * ``error``   - ``{"detail": "<message>"}`` (terminates the stream)
 """
 
@@ -14,7 +14,7 @@ from collections.abc import Iterator
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 
 from app.api.deps import CurrentUser, DbSession
 from app.config import get_settings
@@ -51,11 +51,21 @@ def _to_sources(chunks: list[RetrievedChunk]) -> list[SourceOut]:
     ]
 
 
-def _load_history(db, conversation_id: int | None, user_id: int, limit: int) -> list[llm.HistoryTurn]:
+def _load_history(
+    db,
+    conversation_id: int | None,
+    user_id: int,
+    limit: int,
+    before_message_id: int | None = None,
+) -> list[llm.HistoryTurn]:
     """Return the last ``limit`` messages of a conversation, oldest first.
 
+    When ``before_message_id`` is given (edit mode) only messages *older* than it are
+    used, so the model never sees the turns that the edit is about to replace.
+
     Raises:
-        HTTPException: 404 if the conversation does not exist or isn't the user's.
+        HTTPException: 404 if the conversation (or edited message) does not exist or isn't
+            the user's; 400 if the edited message is not one of the user's own questions.
     """
     if conversation_id is None:
         return []
@@ -63,15 +73,19 @@ def _load_history(db, conversation_id: int | None, user_id: int, limit: int) -> 
     if conversation is None or conversation.user_id != user_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
 
-    stmt = (
-        select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.id.desc())
-        .limit(limit)
-    )
+    if before_message_id is not None:
+        target = db.get(Message, before_message_id)
+        if target is None or target.conversation_id != conversation_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Message not found")
+        if target.role != MessageRole.USER:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only your own questions can be edited")
+
+    stmt = select(Message).where(Message.conversation_id == conversation_id)
+    if before_message_id is not None:
+        stmt = stmt.where(Message.id < before_message_id)
+    stmt = stmt.order_by(Message.id.desc()).limit(limit)
     recent = list(db.scalars(stmt))[::-1]
     return [llm.HistoryTurn(role=m.role.value, content=m.content) for m in recent]
-
 
 def _persist_exchange(
     user_id: int,
@@ -79,12 +93,17 @@ def _persist_exchange(
     question: str,
     answer: str,
     sources: list[SourceOut],
-) -> int:
+    edit_message_id: int | None = None,
+) -> tuple[int, int, int]:
     """Save the user question and assistant answer; create the conversation if new.
 
-    Both messages are written in one transaction, so history never contains an
-    unanswered question. Uses its own session because it runs while the response
-    is streaming, after the request-scoped session may have been closed.
+    Returns ``(conversation_id, user_message_id, assistant_message_id)``.
+
+    Everything happens in one transaction, so history never contains an unanswered
+    question. In edit mode the replaced question and every later message are deleted in
+    that same transaction, i.e. only *after* the new answer succeeded, so a failed edit
+    leaves the original conversation untouched. Uses its own session because it runs while
+    the response is streaming, after the request-scoped session may have been closed.
     """
     with SessionLocal() as db:
         if conversation_id is None:
@@ -95,18 +114,31 @@ def _persist_exchange(
             conversation = db.get(Conversation, conversation_id)
             assert conversation is not None and conversation.user_id == user_id
 
-        db.add(Message(conversation_id=conversation.id, role=MessageRole.USER, content=question))
-        db.add(
-            Message(
-                conversation_id=conversation.id,
-                role=MessageRole.ASSISTANT,
-                content=answer,
-                # Citations only (file/page); excerpt text isn't duplicated into history.
-                sources=[s.model_dump(exclude={"snippet"}) for s in sources],
-            )
+            if edit_message_id is not None:
+                older = db.scalar(
+                    select(func.count())
+                    .select_from(Message)
+                    .where(Message.conversation_id == conversation.id, Message.id < edit_message_id)
+                )
+                db.execute(
+                    delete(Message).where(
+                        Message.conversation_id == conversation.id, Message.id >= edit_message_id
+                    )
+                )
+                if not older:  # the very first question was edited: retitle the chat
+                    conversation.title = question[:80]
+
+        user_msg = Message(conversation_id=conversation.id, role=MessageRole.USER, content=question)
+        assistant_msg = Message(
+            conversation_id=conversation.id,
+            role=MessageRole.ASSISTANT,
+            content=answer,
+            # Citations only (file/page); excerpt text isn't duplicated into history.
+            sources=[s.model_dump(exclude={"snippet"}) for s in sources],
         )
+        db.add_all([user_msg, assistant_msg])
         db.commit()
-        return conversation.id
+        return conversation.id, user_msg.id, assistant_msg.id
 
 
 @router.post(
@@ -124,13 +156,16 @@ def chat(request: Request, payload: ChatRequest, user: CurrentUser, db: DbSessio
     ("hi", "thanks") get a canned reply and skip retrieval and the LLM entirely.
     """
     settings = get_settings()
-    history = _load_history(db, payload.conversation_id, user.id, settings.history_messages)
+    history = _load_history(
+        db, payload.conversation_id, user.id, settings.history_messages, payload.edit_message_id
+    )
     canned = llm.GREETING_MESSAGE if llm.is_greeting(payload.question) else None
     chunks = [] if canned else retrieval.retrieve(payload.question, user_id=user.id)
     logger.info(
-        "chat user=%s conversation=%s history=%d relevant_chunks=%d%s",
+        "chat user=%s conversation=%s%s history=%d relevant_chunks=%d%s",
         user.id,
         payload.conversation_id,
+        f" edit_of={payload.edit_message_id}" if payload.edit_message_id else "",
         len(history),
         len(chunks),
         " -> greeting, replying without retrieval or the LLM"
@@ -139,6 +174,7 @@ def chat(request: Request, payload: ChatRequest, user: CurrentUser, db: DbSessio
     )
     sources = _to_sources(chunks)
     user_id, conversation_id, question = user.id, payload.conversation_id, payload.question
+    edit_message_id = payload.edit_message_id
 
     def event_stream() -> Iterator[str]:
         yield _sse("sources", [s.model_dump() for s in sources])
@@ -178,8 +214,17 @@ def chat(request: Request, payload: ChatRequest, user: CurrentUser, db: DbSessio
             yield _sse("error", {"detail": "The model returned an empty response. Please retry."})
             return
 
-        saved_id = _persist_exchange(user_id, conversation_id, question, "".join(parts), sources)
-        yield _sse("done", {"conversation_id": saved_id})
+        saved_id, user_message_id, assistant_message_id = _persist_exchange(
+            user_id, conversation_id, question, "".join(parts), sources, edit_message_id
+        )
+        yield _sse(
+            "done",
+            {
+                "conversation_id": saved_id,
+                "user_message_id": user_message_id,
+                "assistant_message_id": assistant_message_id,
+            },
+        )
 
     return StreamingResponse(
         event_stream(),

@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.models.db import User
@@ -32,3 +33,18 @@ def get_current_user(token: Annotated[str, Depends(oauth2_scheme)], db: DbSessio
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def is_admin(user: User) -> bool:
+    """True if the user's email is listed in ``ADMIN_EMAILS``."""
+    return user.email.lower() in get_settings().admin_email_set
+
+
+def get_admin_user(user: CurrentUser) -> User:
+    """Like :func:`get_current_user` but only for admins; everyone else gets 403."""
+    if not is_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required")
+    return user
+
+
+AdminUser = Annotated[User, Depends(get_admin_user)]

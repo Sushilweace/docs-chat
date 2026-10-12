@@ -7,10 +7,10 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import DbSession
+from app.api.deps import CurrentUser, DbSession, is_admin
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.db import User
-from app.models.schemas import SignupRequest, TokenResponse, UserOut
+from app.models.schemas import MeOut, SignupRequest, TokenResponse, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -46,3 +46,9 @@ def login(form: Annotated[OAuth2PasswordRequestForm, Depends()], db: DbSession) 
             headers={"WWW-Authenticate": "Bearer"},
         )
     return TokenResponse(access_token=create_access_token(user.id))
+
+
+@router.get("/me", response_model=MeOut)
+def me(user: CurrentUser) -> MeOut:
+    """The logged-in user, plus whether they may open the admin panel."""
+    return MeOut(id=user.id, email=user.email, created_at=user.created_at, is_admin=is_admin(user))

@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
 
+    # Comma-separated emails allowed to open the admin panel (/admin). Empty = admin disabled.
+    admin_emails: str = ""
+
     # --- Storage ---
     database_url: str = "sqlite:///./data/app.db"
     chroma_path: Path = Path("./data/chroma")
@@ -52,12 +55,14 @@ class Settings(BaseSettings):
     history_messages: int = 5
 
     # --- LLM ---
-    llm_provider: Literal["anthropic", "gemini"] = "anthropic"
+    llm_provider: Literal["anthropic", "gemini", "groq"] = "anthropic"
     llm_max_tokens: int = 1024
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5-5"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.8-flash"
+    groq_api_key: str = ""
+    groq_model: str = "qwen/qwen3.8-27b"
 
     # --- Rate limiting ---
     chat_rate_limit: str = "10/minute"
@@ -65,12 +70,19 @@ class Settings(BaseSettings):
     @property
     def llm_api_key(self) -> str:
         """API key for the currently selected LLM provider (may be empty)."""
-        return self.gemini_api_key if self.llm_provider == "gemini" else self.anthropic_api_key
+        keys = {"anthropic": self.anthropic_api_key, "gemini": self.gemini_api_key, "groq": self.groq_api_key}
+        return keys[self.llm_provider]
 
     @property
     def llm_model(self) -> str:
         """Model name for the currently selected LLM provider."""
-        return self.gemini_model if self.llm_provider == "gemini" else self.anthropic_model
+        models = {"anthropic": self.anthropic_model, "gemini": self.gemini_model, "groq": self.groq_model}
+        return models[self.llm_provider]
+
+    @property
+    def admin_email_set(self) -> frozenset[str]:
+        """Lower-cased admin emails parsed from ``ADMIN_EMAILS``."""
+        return frozenset(e.strip().lower() for e in self.admin_emails.split(",") if e.strip())
 
     @property
     def max_upload_bytes(self) -> int:

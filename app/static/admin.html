@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DocChat admin</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/admin.css" />
+  </head>
+  <body class="admin-body">
+    <header class="admin-header">
+      <h1>🛠 DocChat admin</h1>
+      <nav id="tabs" class="admin-tabs" role="tablist"></nav>
+      <div class="admin-user">
+        <span id="who" class="muted"></span>
+        <a class="link" href="/">← Back to app</a>
+      </div>
+    </header>
+
+    <main class="admin-main">
+      <!-- Shown instead of the data when login / permission is missing -->
+      <section id="notice" class="notice hidden" role="alert"></section>
+
+      <section id="overview" class="cards hidden"></section>
+
+      <section id="table-view" class="hidden">
+        <div class="toolbar">
+          <input id="search" type="search" placeholder="Search…" autocomplete="off" />
+          <div id="filters" class="filters"></div>
+          <label class="size">Rows
+            <select id="page-size">
+              <option>10</option>
+              <option selected>20</option>
+              <option>50</option>
+              <option>100</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="table-wrap">
+          <table id="grid">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div class="pager">
+          <span id="range" class="muted"></span>
+          <div class="pager-controls">
+            <button id="first" class="secondary" type="button" title="First page">«</button>
+            <button id="prev" class="secondary" type="button" title="Previous page">‹ Prev</button>
+            <span class="pager-page">Page
+              <input id="page-input" type="number" min="1" value="1" aria-label="Page number" />
+              of <span id="pages">1</span>
+            </span>
+            <button id="next" class="secondary" type="button" title="Next page">Next ›</button>
+            <button id="last" class="secondary" type="button" title="Last page">»</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/admin.js"></script>
+  </body>
+</html>

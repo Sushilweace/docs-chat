@@ -39,6 +39,7 @@
           <h1>📄 DocChat</h1>
           <div class="user">
             <span id="user-email" class="muted" title=""></span>
+            <a id="admin-link" class="link hidden" href="/admin">Admin</a>
             <button id="logout" class="link" type="button">Log out</button>
           </div>
         </header>
@@ -49,8 +50,15 @@
           <span class="muted">Click or drag &amp; drop</span>
         </label>
 
-        <h2>Your documents</h2>
-        <ul id="doc-list" class="doc-list"></ul>
+        <section class="side-section">
+          <h2>Your documents</h2>
+          <ul id="doc-list" class="doc-list"></ul>
+        </section>
+
+        <section class="side-section">
+          <h2>Chat history</h2>
+          <ul id="conv-list" class="conv-list"></ul>
+        </section>
       </aside>
 
       <section class="chat">

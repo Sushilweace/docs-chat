@@ -42,8 +42,8 @@ page, chunked, embedded locally with MiniLM, and stored in ChromaDB with user an
 metadata. Questions are embedded and searched with a per-user filter, a distance threshold
 decides whether anything relevant exists, and only then is the LLM called. Answers stream
 over Server-Sent Events with file and page citations. It has JWT auth, SQLite chat history,
-rate limiting, a retrieval evaluation script, 51 automated tests, and a small web UI. The LLM
-provider is pluggable, currently Anthropic or Gemini."
+rate limiting, a retrieval evaluation script, 97 automated tests, and a small web UI. The LLM
+provider is pluggable, currently Anthropic, Gemini or Groq."
 
 ---
 
@@ -97,7 +97,7 @@ provider is pluggable, currently Anthropic or Gemini."
 - **Pluggable LLM provider** with provider-neutral errors.
 - **Clear logs** that explain each 4xx response and each retrieval (nearest distance, threshold).
 - **Evaluation script** `eval/run_eval.py` that prints retrieval hit rate, MRR and correct-refusal rate.
-- **51 automated tests** covering chunking, auth, upload and ingestion, isolation, history,
+- **97 automated tests** covering chunking, auth, upload and ingestion, isolation, history,
   SSE format, error events, rate limiting, provider switching.
 
 ---
@@ -138,7 +138,7 @@ flowchart TD
     subgraph Services
         Ing["ingestion"]
         Ret["retrieval"]
-        LLM["llm (Anthropic or Gemini)"]
+        LLM["llm (Anthropic, Gemini or Groq)"]
         Emb["embeddings (MiniLM)"]
     end
 
@@ -546,7 +546,7 @@ the actual parsing is exercised.
 Chunking size/overlap and no word cuts; auth (duplicate, wrong password, weak password); upload and
 background ingestion; per-user isolation of both retrieval and conversations; the LLM is **not** called when
 nothing is relevant; history window of 5; SSE format; error events for auth/rate limit/empty responses;
-rate limiting (the 11th request returns 429); provider switching and error translation. 51 tests total.
+rate limiting (the 11th request returns 429); provider switching, error translation and retry, document deletion, saved conversations, editing a question and the admin panel's access control and pagination. 97 tests total.
 
 **Q56. How would you test the LLM answer quality?**
 Create a labelled question set, run the full pipeline, and score faithfulness and relevance (LLM-as-judge
@@ -622,14 +622,14 @@ Use the STAR format: Situation, Task, Action, Result.
 - Dense retrieval only: no hybrid (BM25) search and no re-ranker.
 - The rate limiter and background ingestion are in-process (not shared across workers or restart-safe).
 - SQLite and `create_all` instead of Postgres and migrations.
-- No document delete endpoint and no conversation list/history endpoint (chat history isn't restored after a page reload).
+- Chats are listed newest-first by creation (no search, rename or pinning); editing a question deletes the later messages instead of keeping branches/versions.
 - Login has no brute-force protection; tokens can't be revoked; no email verification or password reset.
 - The UI shows raw markdown from the model (`**bold**`) instead of rendering it.
 - No automated measurement of answer faithfulness (only retrieval metrics).
 
 **Next steps (roadmap)**
 1. Query rewriting + hybrid search + cross-encoder re-ranking.
-2. Delete document / list conversations endpoints; restore chat history in the UI.
+2. Chat rename/search; keep edited messages as branches (version history).
 3. Redis (rate limits) + Celery/arq (ingestion) + Postgres/pgvector + Alembic.
 4. OCR (Tesseract) for scanned PDFs; support DOCX/TXT/HTML.
 5. Markdown rendering in the UI; "stop generating" button.
@@ -656,7 +656,7 @@ Use the STAR format: Situation, Task, Action, Result.
 | SSE events | `sources`, `token`, `done`, `error` |
 | Document states | `processing`, `ready`, `failed` |
 | Chroma metadata | `user_id`, `source`, `page`, `document_id`, `chunk_index` |
-| Tests | **51** (chat 25, llm providers 10, auth 6, chunking 6, documents 4) |
+| Tests | **97** (chat 25, llm providers 22, admin 21, conversations 9, documents 8, auth 6, chunking 6) |
 | LLM providers | Anthropic (default `claude-sonnet-5-5`) or Gemini (`gemini-3.8-flash`) |
 
 ### Demo script (3 minutes)

@@ -93,11 +93,28 @@ form input:focus, textarea:focus { outline: 2px solid var(--primary); outline-of
   border: 2px dashed var(--border); border-radius: var(--radius); cursor: pointer;
 }
 .dropzone:hover, .dropzone.dragover, .dropzone:focus-visible { border-color: var(--primary); background: var(--bg); outline: none; }
-.doc-list {
+/* Documents and chat history share the sidebar; each list scrolls on its own. */
+.side-section { display: flex; flex-direction: column; gap: 8px; flex: 1 1 0; min-height: 96px; min-width: 0; }
+.doc-list, .conv-list {
   list-style: none; margin: 0; padding: 0; overflow-x: hidden; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 8px; min-height: 0;
+  display: flex; flex-direction: column; gap: 8px; min-height: 0; flex: 1 1 auto;
 }
-.doc-list .empty { color: var(--muted); font-size: 13px; }
+.doc-list .empty, .conv-list .empty { color: var(--muted); font-size: 13px; }
+.icon-btn {
+  flex: 0 0 auto; width: 24px; height: 24px; padding: 0; line-height: 1; font-size: 13px;
+  background: transparent; border: 0; border-radius: 6px; color: var(--muted);
+}
+.icon-btn:hover:not(:disabled) { color: var(--bad); background: var(--bad-bg); }
+
+/* chat history rows */
+.conv { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 10px; min-width: 0; }
+.conv.active { border-color: var(--primary); background: var(--bg); }
+.conv-open {
+  flex: 1 1 auto; min-width: 0; text-align: left; background: none; border: 0; padding: 8px 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.conv .icon-btn { margin-right: 6px; }
+.busy .conv-open { opacity: 0.55; pointer-events: none; }
 .doc {
   border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: grid; gap: 4px;
   grid-template-columns: minmax(0, 1fr); /* let long names shrink instead of widening the card */
@@ -133,6 +150,18 @@ form input:focus, textarea:focus { outline: 2px solid var(--primary); outline-of
 .msg.user .bubble { background: var(--user-bubble); color: #fff; border-bottom-right-radius: 4px; }
 .msg.assistant .bubble { background: var(--bot-bubble); border-bottom-left-radius: 4px; }
 .msg.error .bubble { background: var(--bad-bg); color: var(--bad); }
+.msg-actions { margin-top: 2px; }
+.msg-actions .link { font-size: 12px; color: var(--muted); }
+.msg-actions .link:hover { color: var(--primary); }
+.busy .msg-actions { visibility: hidden; }
+.msg.editing { width: min(760px, 92%); }
+.editor { width: 100%; display: grid; gap: 8px; }
+.editor textarea {
+  width: 100%; resize: vertical; min-height: 44px; max-height: 240px; padding: 10px 12px;
+  background: var(--bg); border: 1px solid var(--primary); border-radius: 10px;
+}
+.editor-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.editor-actions .primary { padding: 6px 14px; }
 .cursor::after { content: "▍"; animation: blink 1s steps(2) infinite; margin-left: 1px; }
 @keyframes blink { 50% { opacity: 0; } }
 .cite {

@@ -17,7 +17,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import auth, chat, documents
+from app.api import admin, auth, chat, conversations, documents
 from app.config import get_settings
 from app.core.database import init_db
 from app.core.rate_limit import limiter
@@ -83,6 +83,8 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(documents.router)
     app.include_router(chat.router)
+    app.include_router(conversations.router)
+    app.include_router(admin.router)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

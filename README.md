@@ -13,7 +13,7 @@ carry **file + page citations**. If nothing relevant is found, the service says 
 | API            | FastAPI (Python 3.11+)                                    |
 | Vector store   | ChromaDB (persistent, cosine distance)                    |
 | Embeddings     | `sentence-transformers/all-MiniLM-L6-v2` (local, CPU OK)  |
-| Generation     | Anthropic SDK (default) or Google Gemini, via `LLM_PROVIDER` |
+| Generation     | Anthropic SDK (default), Google Gemini or Groq, via `LLM_PROVIDER` |
 | PDF parsing    | `pypdf` (per page)                                        |
 | Relational DB  | SQLite + SQLAlchemy 2.0 (users, documents, chat history)  |
 | Auth           | JWT (`python-jose`) + `passlib` password hashing          |
@@ -32,7 +32,8 @@ pip install -r requirements.txt
 # 3. Configuration
 copy .env.example .env               # macOS/Linux: cp .env.example .env
 #   - set JWT_SECRET:  python -c "import secrets; print(secrets.token_urlsafe(48))"
-#   - pick an LLM: set ANTHROPIC_API_KEY, or LLM_PROVIDER=gemini + GEMINI_API_KEY
+#   - pick an LLM: set ANTHROPIC_API_KEY, or LLM_PROVIDER=gemini + GEMINI_API_KEY,
+#     or LLM_PROVIDER=groq + GROQ_API_KEY
 
 # 4. Run
 uvicorn app.main:app --reload
@@ -53,7 +54,14 @@ at `/`, so there is no build step and no CORS to configure.
   kept in `localStorage`, and an expired token returns you to the login screen.
 - **Documents sidebar:** click or drag & drop PDFs. Each document shows `processing` (with a
   spinner), `ready` (pages/chunks) or `failed` (with the reason). The list refreshes itself
-  while anything is still being ingested.
+  while anything is still being ingested. The **✕** button removes a document (its vectors,
+  PDF file and database row), so chat stops using it immediately; it is disabled while the
+  document is still being indexed.
+- **Chat history:** every chat is saved in SQLite and listed in the sidebar. Click one to
+  reopen it (and continue it), **✕** deletes it, and **New chat** starts a fresh one.
+- **Edit a question:** the **Edit** link under any of your messages lets you change it and
+  resend. That question and everything after it are replaced by the new question and its new
+  answer (older messages are kept). If the new answer fails, the original chat is left intact.
 - **Chat:** answers stream token by token (the UI reads the SSE stream with `fetch`, since
   `EventSource` cannot POST or send an `Authorization` header). `[n]` markers become citation
   chips whose tooltip shows the file and page (hover a chip). There is no separate sources list,
@@ -90,12 +98,22 @@ curl -N -X POST localhost:8000/chat -H "Authorization: Bearer $TOKEN" \
 | `POST /auth/login`      | no   | OAuth2 password form -> `{access_token, token_type}`                |
 | `POST /documents/upload`| yes  | Upload a PDF; `202` with `status: processing`                       |
 | `GET /documents`        | yes  | List the caller's documents (`processing` / `ready` / `failed`)     |
+| `DELETE /documents/{id}`| yes  | Remove a document and its vectors (`204`; `409` while processing)   |
 | `POST /chat`            | yes  | Ask a question; SSE stream. Rate limited (default `10/minute`)      |
+| `GET /conversations`    | yes  | The caller's saved chats, newest first                              |
+| `GET /conversations/{id}` | yes | One chat with all its messages (oldest first)                      |
+| `DELETE /conversations/{id}` | yes | Delete a chat and its messages (`204`)                          |
+| `GET /auth/me`          | yes  | The caller's profile, including `is_admin`                          |
+| `GET /admin`            | no*  | Admin panel page (*its data calls are admin-only, see below)        |
+| `GET /admin/data/{stats,users,documents,conversations,messages,chunks}` | admin | Paginated read-only views of all data (`?page=&page_size=&q=`) |
 | `GET /health`           | no   | Liveness probe                                                      |
 
 ### `/chat` stream format
 
 Request: `{"question": "...", "conversation_id": 12}` (`conversation_id` optional; omit to start a new thread).
+To **edit** an earlier question, also send `"edit_message_id": <id of your old question>`
+(requires `conversation_id`): that message and all later ones are replaced by this exchange,
+but only after the new answer succeeded.
 
 Every event's `data` is JSON:
 
@@ -110,7 +128,7 @@ event: token
 data: {"text":"that revenue grew [1]."}
 
 event: done
-data: {"conversation_id": 12}
+data: {"conversation_id": 12, "user_message_id": 31, "assistant_message_id": 32}
 ```
 
 `[n]` markers in the answer refer to `sources[].index`. An `error` event
@@ -206,11 +224,12 @@ flowchart TD
 app/
   main.py              app factory, lifespan, router + rate-limit wiring
   config.py            pydantic-settings (.env)
-  api/                 deps.py, auth.py, documents.py, chat.py
+  api/                 deps.py, auth.py, documents.py, chat.py, conversations.py, admin.py
   services/            embeddings.py, ingestion.py, retrieval.py, llm.py
   models/              db.py (SQLAlchemy), schemas.py (pydantic)
   core/                security.py, database.py, vectorstore.py, rate_limit.py
-  static/              index.html, styles.css, app.js (web UI)
+  static/              index.html, styles.css, app.js (web UI); admin.html, admin.css, admin.js
+scripts/               inspect_chroma.py (read-only vector DB helper)
 tests/                 pytest suite (fake embedder + fake LLM; no network/API key)
 eval/                  run_eval.py, questions.json
 ```
@@ -223,8 +242,9 @@ pytest -q
 
 The suite uses a deterministic fake embedder and a recording fake LLM, so it needs no model
 download or API key. It covers chunking, auth, upload + background ingestion, per-user
-isolation, the no-answer path (LLM not called), history windowing, SSE format, error events
-and rate limiting.
+isolation, the no-answer path (LLM not called), history windowing, SSE format, error events,
+rate limiting, deleting documents, saved conversations, editing a question, and automatic
+retry of temporary LLM errors, and the admin panel (access control, pagination, filters).
 
 ## Evaluating retrieval
 
@@ -252,9 +272,42 @@ It prints per-question results plus **hit rate** (a matching chunk in the top-k)
 and the **correct-refusal rate** for negative questions. Use `--no-threshold` to judge pure
 ranking quality, then tune `DISTANCE_THRESHOLD` using the refusal rate.
 
+## Admin panel
+
+A built-in, read-only admin panel shows **all** data with pagination: users, documents,
+conversations, messages and the ChromaDB chunks (plus an overview with counts).
+
+1. Add your account's email to `.env` (comma-separated for several admins; empty means nobody is admin):
+
+   ```env
+   ADMIN_EMAILS=you@example.com
+   ```
+
+2. Restart the server, log in, and click **Admin** in the sidebar, or open <http://127.0.0.1:8000/admin>.
+
+Each tab has search, a page-size selector (10/20/50/100), first/prev/next/last and jump-to-page.
+Counts link to the related rows (for example a conversation's message count opens its messages).
+Password hashes are never exposed. The page shell is public, but every `/admin/data/*` call is
+checked on the server (`401` without a token, `403` for non-admins).
+
+## Inspecting the databases
+
+- **SQLite** (`data/app.db`: users, documents, chats): open it with any SQLite viewer, e.g.
+  DB Browser for SQLite, or in the browser with `sqlite-web` (`pip install sqlite-web`).
+- **ChromaDB** (`data/chroma/`: chunks + embeddings) has no viewer, so use the read-only helper:
+
+  ```powershell
+  python scripts/inspect_chroma.py                              # chunks per user/document
+  python scripts/inspect_chroma.py --show 3                     # + first 3 chunks of each document
+  python scripts/inspect_chroma.py --query "tech skills" --user 2   # nearest chunks + distances
+  ```
+
+  `--query` shows each hit's cosine distance and whether it passes `DISTANCE_THRESHOLD`, which is the
+  quickest way to see why a question was (or wasn't) answered.
+
 ## Configuration
 
-### Choosing the LLM (Anthropic or Gemini)
+### Choosing the LLM (Anthropic, Gemini or Groq)
 
 Only the generation step is provider-specific (embeddings are always local MiniLM). Pick one in `.env`:
 
@@ -268,9 +321,21 @@ ANTHROPIC_MODEL=claude-sonnet-5-5
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=AIza...
 GEMINI_MODEL=gemini-3.8-flash
+
+# ...or Groq (key from https://console.groq.com/keys; free tier available)
+LLM_PROVIDER=groq
+GROQ_API_KEY=gsk_...
+GROQ_MODEL=qwen/qwen3.8-27b   # model access differs per account, see below
 ```
 
 Restart the server after changing it; the startup log prints `LLM provider: ... (model: ...)`.
+
+Groq (and Gemini) model access differs per account. If the chat says the model is not available, list
+the models your key can use and put one into `GROQ_MODEL`:
+
+```powershell
+python -c "import groq; from app.config import get_settings as g; print(*sorted(m.id for m in groq.Groq(api_key=g().groq_api_key).models.list().data), sep='\n')"
+```
 Each adapter in `services/llm.py` turns its SDK's errors into `LLMAuthError` /
 `LLMRateLimitError`, so the API layer and UI behave identically for both. Adding another
 provider means adding one `_stream_<name>` function.
@@ -279,9 +344,10 @@ provider means adding one `_stream_<name>` function.
 
 All settings live in `.env` (see `.env.example`): `JWT_SECRET` (required, >= 32 chars),
 `LLM_PROVIDER`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (default `claude-sonnet-5-5`),
-`GEMINI_API_KEY`, `GEMINI_MODEL` (default `gemini-3.8-flash`), `CHUNK_SIZE`,
+`GEMINI_API_KEY`, `GEMINI_MODEL` (default `gemini-3.8-flash`), `GROQ_API_KEY`,
+`GROQ_MODEL` (default `qwen/qwen3.8-27b`), `CHUNK_SIZE`,
 `CHUNK_OVERLAP`, `TOP_K`, `DISTANCE_THRESHOLD`, `HISTORY_MESSAGES`, `CHAT_RATE_LIMIT`,
-`MAX_UPLOAD_MB`, and storage paths.
+`MAX_UPLOAD_MB`, `ADMIN_EMAILS`, and storage paths.
 
 ## Production notes / next steps
 
@@ -289,7 +355,9 @@ All settings live in `.env` (see `.env.example`): `JWT_SECRET` (required, >= 32 
 - Rate-limit storage is in-memory (per process). Use `Limiter(storage_uri="redis://...")` for
   multiple workers. Background ingestion is in-process; use a real queue (Celery/RQ/arq) for
   heavy loads.
-- Add `DELETE /documents/{id}` (the `document_id` metadata already supports clean removal),
-  CORS configuration for browser clients, and query rewriting for follow-up questions
+- Add CORS configuration for browser clients, and query rewriting for follow-up questions
   (retrieval currently uses only the latest question).
+- Temporary LLM errors (HTTP 429/5xx, e.g. Gemini's `503 high demand`) are retried up to twice
+  with a short backoff, but only before any text has been streamed; if they persist, the UI
+  shows "The language model is busy". See `_RETRY_DELAYS` in `services/llm.py`.
 - Serve behind a reverse proxy with TLS; set `X-Accel-Buffering: no` (already sent) so SSE isn't buffered.
